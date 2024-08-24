@@ -152,16 +152,6 @@ definition = {
   ["Total power generation", "el", "p_generated", "^.*\((.*)\*kW\)",
   "W", "float", "1000", "1", "mdi:gauge"],
 
-# Serial/equipment identifier is truncated to last 8 digits and used as tag in influxdb
-# If full serial is required, remove \d{26} or change to \d{34}
-"0-1:24.2.1":
-  ["Gas consumption", "gas", "gas_consumed", "^.*\((.*)\*m3\)",
-   "m\u00b3", "float", "1000", "1", "mdi:counter"],
-
-"0-1:96.1.0":
-  ["Equipment Identifier", "gas", "serial", "^.*\(\d{26}(.*)\)",
-   "", "str", "1", "0", "mdi:tag-text-outline"],
-
 "1-0:1.8.1":
   ["EL consumed (Tariff 1)", "el", "el_consumed1", "^.*\((.*)\*kWh\)",
    "Wh", "float", "1000", "1", "mdi:counter"],
@@ -170,20 +160,20 @@ definition = {
   ["EL consumed (Tariff 2)", "el", "el_consumed2", "^.*\((.*)\*kWh\)",
    "Wh", "float", "1000", "1", "mdi:counter"],
 
-"1-0:2.8.1":
+"1-0:2.8.0":
   ["EL returned (Tariff 1)", "el", "el_returned1", "^.*\((.*)\*kWh\)",
    "Wh", "float", "1000", "1", "mdi:counter"],
 
-"1-0:2.8.2":
-  ["EL returned (Tariff 2)", "el", "el_returned2", "^.*\((.*)\*kWh\)",
-   "Wh", "float", "1000", "1", "mdi:counter"],
+#"1-0:2.8.2":
+#  ["EL returned (Tariff 2)", "el", "el_returned2", "^.*\((.*)\*kWh\)",
+#   "Wh", "float", "1000", "1", "mdi:counter"],
 
 # Virtual, not existing in dsmr telegram & specification, to sum tarif 1 & 2 to a single message
-"1-0:1.8.3":
+"1-0:1.8.0":
   ["EL consumed", "el", "el_consumed", "^.*\((.*)\*kWh\)",
    "Wh", "float", "1000", "1", "mdi:counter"],
 
-"1-0:2.8.3":
+"1-0:2.8.0":
   ["EL returned", "el", "el_returned", "^.*\((.*)\*kWh\)",
    "Wh", "float", "1000", "1", "mdi:counter"],
 

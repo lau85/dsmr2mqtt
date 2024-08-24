@@ -88,59 +88,6 @@ class TaskReadSerial(threading.Thread):
   def __del__(self):
     logger.debug(">>")
 
-  def __preprocess(self):
-    """
-      Add a virtual dsmr entry, which is sum of tariff 1 and tariff 2
-
-      "1-0:1.8.1" + "1-0:1.8.2" --> "1-0:1.8.3"
-      "1-0:2.8.1" + "1-0:2.8.2" --> "1-0:2.8.3"
-
-      1-0:1.8.1(016230.132*kWh)
-      1-0:1.8.2(007449.542*kWh)
-      1-0:2.8.1(005998.736*kWh)
-      1-0:2.8.2(015098.938*kWh)
-
-    Returns:
-      None
-    """
-
-    e_consumed = 0.0
-    e_returned = 0.0
-
-    for element in self.__telegram:
-      try:
-        value = re.match(r"1-0:1\.8\.1\((\d{6}\.\d{3})\*kWh\)", element).group(1)
-        e_consumed = e_consumed + float(value)
-      except AttributeError:
-        pass
-
-      try:
-        value = re.match(r"1-0:1\.8\.2\((\d{6}\.\d{3})\*kWh\)", element).group(1)
-        e_consumed = e_consumed + float(value)
-      except AttributeError:
-        pass
-
-      try:
-        value = re.match(r"1-0:2\.8\.1\((\d{6}\.\d{3})\*kWh\)", element).group(1)
-        e_returned = e_returned + float(value)
-      except AttributeError:
-        pass
-
-      try:
-        value = re.match(r"1-0:2\.8\.2\((\d{6}\.\d{3})\*kWh\)", element).group(1)
-        e_returned = e_returned + float(value)
-      except AttributeError:
-        pass
-
-    # Insert the virtual entries in the dsmr telegram
-    e_consumed = "{0:10.3f}".format(e_consumed)
-    line = f"1-0:1.8.3({e_consumed}*kWh)"
-    self.__telegram.append(line)
-
-    e_returned = "{0:10.3f}".format(e_returned)
-    line = f"1-0:2.8.3({e_returned}*kWh)"
-    self.__telegram.append(line)
-
   def __read_serial(self):
     """
       Opens & Closes serial port
@@ -183,8 +130,12 @@ class TaskReadSerial(threading.Thread):
           logger.debug(f"EOF Detected in {cfg.SIMULATORFILE}")
           break
 
-      # do some magic on telegram
-      self.__preprocess()
+      file_path = "/mnt/ramdisk/p1_live.txt"
+
+      with open(file_path, 'w') as file:
+        # Write each line to the file
+        for line in  self.__telegram:
+          file.write(line + '\n')
 
       # Trigger that new telegram is available for MQTT
       self.__trigger.set()
