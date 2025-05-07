@@ -31,6 +31,8 @@ import threading
 import time
 import re
 
+from datetime import datetime
+
 import config as cfg
 
 # Logging
@@ -60,6 +62,10 @@ class TaskReadSerial(threading.Thread):
     self.__telegram = telegram
     self.__counter = 0
 
+    self.__start_time = None
+    self.__start_exported = None
+    self.__last_average = None
+
     # [ Serial parameters ]
     if cfg.PRODUCTION:
       self.__tty = serial.Serial()
@@ -88,6 +94,73 @@ class TaskReadSerial(threading.Thread):
   def __del__(self):
     logger.debug(">>")
 
+  def __preprocess(self):
+
+    current_exported = None
+    state_time = None
+    current_export_power = None
+
+    for element in self.__telegram:
+      try:
+        value = re.match(r"0-0:1\.0\.0\((\d{12})\*?S\)", element).group(1)
+        state_time = datetime.strptime(value, "%y%m%d%H%M%S")
+      except AttributeError:
+        pass
+
+      try:
+        value = re.match(r"1-0:2\.8\.0\((\d{6}\.\d{3})\*kWh\)", element).group(1)
+        current_exported = float(value)
+      except AttributeError:
+        pass
+
+      try:
+        value = re.match(r"1-0:2\.7\.0\((\d{2}\.\d{3})\*kW\)", element).group(1)
+        current_export_power = float(value)
+      except AttributeError:
+        pass
+
+    if state_time is None or current_exported is None:
+      return
+
+    if self.__start_time is not None and state_time.minute % 15 == 0 and state_time.minute != self.__start_time.minute:
+        self.__start_time = None
+
+    if self.__start_time is None:
+        self.__start_time = state_time
+        self.__start_exported = current_exported
+        cycle_exported = 0
+        cycle_duration = 0
+    else:
+        cycle_exported = current_exported - self.__start_exported
+        cycle_duration = state_time.timestamp() - self.__start_time.timestamp()
+
+    if cycle_duration > 45:
+        average = cycle_exported * 3600 / cycle_duration
+    else:
+        if current_export_power is not None:
+            average = current_export_power
+        else:
+            average = self.__last_average
+
+    # To make first minute of average value graph look smoother when instant power is changing fast
+    if cycle_duration < 60 and self.__last_average is not None:
+        average = (average + self.__last_average * 3) / 4
+
+
+    # Insert the virtual entries in the dsmr telegram
+    if average is not None:
+        line = f"1-0:2.7.9({average:06.3f}*kW)"
+        self.__telegram.append(line)
+        self.__last_average = average
+
+  # Sometimes we can have corrupted data. This method is fixing the line
+  def __fix_line(self, line):
+    if '<' in line:
+      logging.info(f"Old line: {line}")
+      line = line.replace('<', '(')
+      logging.info(f"New line: {line}")
+    return line
+
   def __read_serial(self):
     """
       Opens & Closes serial port
@@ -106,7 +179,7 @@ class TaskReadSerial(threading.Thread):
       # wait till parser has copied telegram content
       # ...we need the opposite of trigger.wait()...block when set; not available
       while self.__trigger.is_set():
-        time.sleep(0.1)
+        time.sleep(0.01)
 
       # add a counter as first field to the list
       self.__counter += 1
@@ -119,6 +192,11 @@ class TaskReadSerial(threading.Thread):
       # First element in telegram starts with "!"
       nrof_elements = 0
       while (not self.__stopper.is_set()) and (not line.startswith('!')):
+        try:
+          line = self.__fix_line(line)
+        except Exception:
+          logger.exception("Error in __fix_line")
+
         self.__telegram.append(line)
         line = self.__tty.readline().decode('utf-8').rstrip()
         nrof_elements += 1
@@ -129,6 +207,12 @@ class TaskReadSerial(threading.Thread):
           self.__stopper.set()
           logger.debug(f"EOF Detected in {cfg.SIMULATORFILE}")
           break
+
+      try:
+        self.__preprocess()
+      except Exception:
+        logger.exception("Error in __preprocess")
+
 
       file_path = "/mnt/ramdisk/p1_live.txt"
 

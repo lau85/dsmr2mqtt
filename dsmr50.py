@@ -112,13 +112,13 @@ definition = {
   ["Number power failures", "el", "power_failures", "^.*\((.*)\)",
    "", "int", "1", "1", "mdi:transmission-tower-off"],
 
-"0-0:96.7.9":
-  ["Number long power failures", "el", "long_power_failures", "^.*\((.*)\)",
-   "", "int", "1", "1", "mdi:transmission-tower-off"],
+#"0-0:96.7.9":
+#  ["Number long power failures", "el", "long_power_failures", "^.*\((.*)\)",
+#   "", "int", "1", "1", "mdi:transmission-tower-off"],
 
-"0-0:96.14.0":
-  ["Tariff indicator electricity", "el", "tariff_indicator", "^.*\((.*)\)",
-  "", "int", "1", "1", "mdi:weather-night"],
+#"0-0:96.14.0":
+#  ["Tariff indicator electricity", "el", "tariff_indicator", "^.*\((.*)\)",
+#  "", "int", "1", "1", "mdi:weather-night"],
 
 "1-0:21.7.0":
   ["Power usage L1", "el", "P1_consumed", "^.*\((.*)\*kW\)",
@@ -150,6 +150,10 @@ definition = {
 
 "1-0:2.7.0":
   ["Total power generation", "el", "p_generated", "^.*\((.*)\*kW\)",
+  "W", "float", "1000", "1", "mdi:gauge"],
+
+"1-0:2.7.9":
+  ["Average power generation (15 min)", "el", "p_generated_average", "^.*\((.*)\*kW\)",
   "W", "float", "1000", "1", "mdi:gauge"],
 
 "1-0:1.8.1":
@@ -203,29 +207,29 @@ definition = {
 #  ["Current L3", "el", "I3", "^.*\((.*)\*A\)",
 #  "A", "int", "1", "0", "mdi:gauge"],
 
-"1-0:32.36.0":
-  ["Voltage swells L1", "el", "V1_swells", "^.*\((.*)\)",
-  "", "int", "1", "1", "mdi:elevation-rise"],
+#"1-0:32.36.0":
+#  ["Voltage swells L1", "el", "V1_swells", "^.*\((.*)\)",
+#  "", "int", "1", "1", "mdi:elevation-rise"],
 
-"1-0:52.36.0":
-  ["Voltage swells L2", "el", "V2_swells", "^.*\((.*)\)",
-  "", "int", "1", "1", "mdi:elevation-rise"],
+#"1-0:52.36.0":
+#  ["Voltage swells L2", "el", "V2_swells", "^.*\((.*)\)",
+#  "", "int", "1", "1", "mdi:elevation-rise"],
 
-"1-0:72.36.0":
-  ["Voltage swells L3", "el", "V3_swells", "^.*\((.*)\)",
-  "", "int", "1", "1", "mdi:elevation-rise"],
+#"1-0:72.36.0":
+#  ["Voltage swells L3", "el", "V3_swells", "^.*\((.*)\)",
+#  "", "int", "1", "1", "mdi:elevation-rise"],
 
-"1-0:32.32.0":
-  ["Voltage sags L1", "el", "V1_sags", "^.*\((.*)\)",
-  "", "int", "1", "1", "mdi:elevation-decline"],
+#"1-0:32.32.0":
+#  ["Voltage sags L1", "el", "V1_sags", "^.*\((.*)\)",
+#  "", "int", "1", "1", "mdi:elevation-decline"],
 
-"1-0:52.32.0":
-  ["Voltage sags L2", "el", "V2_sags", "^.*\((.*)\)",
-  "", "int", "1", "1", "mdi:elevation-decline"],
+#"1-0:52.32.0":
+#  ["Voltage sags L2", "el", "V2_sags", "^.*\((.*)\)",
+#  "", "int", "1", "1", "mdi:elevation-decline"],
 
-"1-0:72.32.0":
-  ["Voltage sags L3", "el", "V3_sags", "^.*\((.*)\)",
-  "", "int", "1", "1", "mdi:elevation-decline"],
+#"1-0:72.32.0":
+#  ["Voltage sags L3", "el", "V3_sags", "^.*\((.*)\)",
+#  "", "int", "1", "1", "mdi:elevation-decline"],
 
 #"0-0:96.3.10":
 #  ["Breaker state", "el", "breaker", "^.*\((.*)\)",
