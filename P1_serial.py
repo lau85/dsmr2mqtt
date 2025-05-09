@@ -106,6 +106,9 @@ class TaskReadSerial(threading.Thread):
         state_time = datetime.strptime(value, "%y%m%d%H%M%S")
       except AttributeError:
         pass
+      except ValueError as e:
+        logging.error(f"Failed to parse datetime from value '{value}'")
+        return
 
       try:
         value = re.match(r"1-0:2\.8\.0\((\d{6}\.\d{3})\*kWh\)", element).group(1)
@@ -122,17 +125,13 @@ class TaskReadSerial(threading.Thread):
     if state_time is None or current_exported is None:
       return
 
-    if self.__start_time is not None and state_time.minute % 15 == 0 and state_time.minute != self.__start_time.minute:
-        self.__start_time = None
-
+    #First run, when start_time and start_exported is not set
     if self.__start_time is None:
-        self.__start_time = state_time
-        self.__start_exported = current_exported
-        cycle_exported = 0
-        cycle_duration = 0
-    else:
-        cycle_exported = current_exported - self.__start_exported
-        cycle_duration = state_time.timestamp() - self.__start_time.timestamp()
+      self.__start_time = state_time
+      self.__start_exported = current_exported
+
+    cycle_duration = state_time.timestamp() - self.__start_time.timestamp()
+    cycle_exported = current_exported - self.__start_exported
 
     if cycle_duration > 45:
         average = cycle_exported * 3600 / cycle_duration
@@ -152,6 +151,11 @@ class TaskReadSerial(threading.Thread):
         line = f"1-0:2.7.9({average:06.3f}*kW)"
         self.__telegram.append(line)
         self.__last_average = average
+
+    if (state_time.minute % 15 == 0 and state_time.minute != self.__start_time.minute) or cycle_duration > 900:
+        self.__start_time = state_time
+        self.__start_exported = current_exported
+
 
   # Sometimes we can have corrupted data. This method is fixing the line
   def __fix_line(self, line):
