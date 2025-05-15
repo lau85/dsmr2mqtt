@@ -152,6 +152,10 @@ definition = {
   ["Total power generation", "el", "p_generated", "^.*\((.*)\*kW\)",
   "W", "float", "1000", "1", "mdi:gauge"],
 
+"1-0:2.7.8":
+  ["Average power generation (previous 15 min)", "el", "p_generated_average_previous", "^.*\((.*)\*kW\)",
+  "W", "float", "1000", "1", "mdi:gauge"],
+
 "1-0:2.7.9":
   ["Average power generation (15 min)", "el", "p_generated_average", "^.*\((.*)\*kW\)",
   "W", "float", "1000", "1", "mdi:gauge"],

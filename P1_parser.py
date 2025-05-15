@@ -105,6 +105,8 @@ class ParseTelegrams(threading.Thread):
       # If type is string, there is no multiplication factor
       if cast != "str":
         data = eval(cast)(dsmr_data) * eval(cast)(multiply)
+        if cast == "float":
+          data = round(data, 3)
       else:
         data = eval(cast)(dsmr_data)
         # logger.debug(f"CAST = {}")

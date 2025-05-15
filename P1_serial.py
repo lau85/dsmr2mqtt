@@ -31,7 +31,7 @@ import threading
 import time
 import re
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import config as cfg
 
@@ -65,6 +65,10 @@ class TaskReadSerial(threading.Thread):
     self.__start_time = None
     self.__start_exported = None
     self.__last_average = None
+    self.__last_period_end_average = None
+    self.__last_period_end_message_count = 0
+    self.__last_state_time = None
+    self.__state_time_corrections_count = 0
 
     # [ Serial parameters ]
     if cfg.PRODUCTION:
@@ -96,20 +100,10 @@ class TaskReadSerial(threading.Thread):
 
   def __preprocess(self):
 
+    state_time = self.__read_state_time()
     current_exported = None
-    state_time = None
     current_export_power = None
-
     for element in self.__telegram:
-      try:
-        value = re.match(r"0-0:1\.0\.0\((\d{12})\*?S\)", element).group(1)
-        state_time = datetime.strptime(value, "%y%m%d%H%M%S")
-      except AttributeError:
-        pass
-      except ValueError as e:
-        logging.error(f"Failed to parse datetime from value '{value}'")
-        return
-
       try:
         value = re.match(r"1-0:2\.8\.0\((\d{6}\.\d{3})\*kWh\)", element).group(1)
         current_exported = float(value)
@@ -133,7 +127,7 @@ class TaskReadSerial(threading.Thread):
     cycle_duration = state_time.timestamp() - self.__start_time.timestamp()
     cycle_exported = current_exported - self.__start_exported
 
-    if cycle_duration > 45:
+    if cycle_duration > 30:
         average = cycle_exported * 3600 / cycle_duration
     else:
         if current_export_power is not None:
@@ -143,11 +137,11 @@ class TaskReadSerial(threading.Thread):
 
     # To make first minute of average value graph look smoother when instant power is changing fast
     if cycle_duration < 60 and self.__last_average is not None:
-        average = (average + self.__last_average * 3) / 4
+        average = (average + self.__last_average * 4) / 5
 
 
     # Insert the virtual entries in the dsmr telegram
-    if average is not None:
+    if average is not None and average >= 0 and average < 20:
         line = f"1-0:2.7.9({average:06.3f}*kW)"
         self.__telegram.append(line)
         self.__last_average = average
@@ -155,7 +149,51 @@ class TaskReadSerial(threading.Thread):
     if (state_time.minute % 15 == 0 and state_time.minute != self.__start_time.minute) or cycle_duration > 900:
         self.__start_time = state_time
         self.__start_exported = current_exported
+        self.__last_period_end_average = self.__last_average
+        self.__last_period_end_message_count = 3
 
+    # Sometimes HA skipping messages. Don't know real reason. Probably because of not able to handle load. Just trying to send same value few times.
+    if self.__last_period_end_average is not None and self.__last_period_end_message_count > 0:
+        self.__telegram.append(f"1-0:2.7.8({self.__last_period_end_average:06.3f}*kW)")
+        self.__last_period_end_message_count -= 1
+
+  def __read_state_time(self):
+    state_time = None
+    date_text = ""
+    for element in self.__telegram:
+      try:
+        date_text = re.match(r"0-0:1\.0\.0\((\d{12})\*?S\)", element).group(1)
+      except AttributeError:
+        pass
+
+    try:
+      state_time = datetime.strptime(date_text, "%y%m%d%H%M%S")
+    except ValueError as e:
+      logging.error(f"Failed to parse datetime from value '{date_text}'")
+
+    try:
+      if self.__last_state_time is not None:
+        if state_time is None:
+          state_time = self.__last_state_time + timedelta(seconds = 1)
+          logging.error(f"Fixing state_time to '{state_time}'")
+        else:
+          delta = (state_time - self.__last_state_time).total_seconds() 
+          if delta < 0 or delta > 60:
+            # only allow to do time correction 3 times, then taking timestamp from message.
+            if self.__state_time_corrections_count < 3:
+              state_time = self.__last_state_time + timedelta(seconds = 1)
+              logging.error(f"Fixing state_time to '{state_time}'")
+              self.__state_time_corrections_count += 1
+            else:
+              self.__state_time_corrections_count = 0
+          else:
+            self.__state_time_corrections_count = 0
+    except Exception:
+      logger.exception("Error in __read_state_time")
+
+    self.__last_state_time = state_time
+
+    return state_time
 
   # Sometimes we can have corrupted data. This method is fixing the line
   def __fix_line(self, line):
