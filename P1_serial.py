@@ -66,7 +66,6 @@ class TaskReadSerial(threading.Thread):
     self.__start_exported = None
     self.__last_average = None
     self.__last_period_end_average = None
-    self.__last_period_end_message_count = 0
     self.__last_state_time = None
     self.__state_time_corrections_count = 0
 
@@ -137,7 +136,7 @@ class TaskReadSerial(threading.Thread):
 
     # To make first minute of average value graph look smoother when instant power is changing fast
     if cycle_duration < 60 and self.__last_average is not None:
-        average = (average + self.__last_average * 4) / 5
+        average = (average + self.__last_average * 9) / 10
 
 
     # Insert the virtual entries in the dsmr telegram
@@ -150,19 +149,16 @@ class TaskReadSerial(threading.Thread):
         self.__start_time = state_time
         self.__start_exported = current_exported
         self.__last_period_end_average = self.__last_average
-        self.__last_period_end_message_count = 3
 
-    # Sometimes HA skipping messages. Don't know real reason. Probably because of not able to handle load. Just trying to send same value few times.
-    if self.__last_period_end_average is not None and self.__last_period_end_message_count > 0:
+    if self.__last_period_end_average is not None:
         self.__telegram.append(f"1-0:2.7.8({self.__last_period_end_average:06.3f}*kW)")
-        self.__last_period_end_message_count -= 1
 
   def __read_state_time(self):
     state_time = None
     date_text = ""
     for element in self.__telegram:
       try:
-        date_text = re.match(r"0-0:1\.0\.0\((\d{12})\*?S\)", element).group(1)
+        date_text = re.match(r"0-0:1\.0\.0\((\d{12})\*?[SW]\)", element).group(1)
       except AttributeError:
         pass
 
@@ -200,6 +196,10 @@ class TaskReadSerial(threading.Thread):
     if '<' in line:
       logging.info(f"Old line: {line}")
       line = line.replace('<', '(')
+      logging.info(f"New line: {line}")
+    if '>' in line:
+      logging.info(f"Old line: {line}")
+      line = line.replace('>', '*')
       logging.info(f"New line: {line}")
     return line
 
