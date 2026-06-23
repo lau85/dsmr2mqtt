@@ -111,7 +111,18 @@ class Discovery(threading.Thread):
             else:
               d["unit_of_measurement"] = ""
 
-            d["value_template"] = "{{ value_json." + tag_matches[i] + " }}"
+#            d["value_template"] = "{{ value_json." + tag_matches[i] + " }}"
+
+            #to avoid warnings in homeassistant logs when tag is missing.
+            key = tag_matches[i]
+            d["value_template"] = (
+                "{% if '" + key + "' in value_json %}"
+                "{{ value_json." + key + " }}"
+                "{% else %}{{ none }}{% endif %}"
+            )
+
+            d["availability_template"] = "{{ '" + key + "' in value_json }}"
+
 
             # Define here all the units that are measured by the meter and that are
             # supported in HA as available device classes
@@ -121,15 +132,18 @@ class Discovery(threading.Thread):
             if d["unit_of_measurement"] == "Wh":
               d["device_class"] = "ENERGY"
               d["state_class"] = "total"
+#              d["state_class"] = "total_increasing"
             elif d["unit_of_measurement"] == "W":
               d["device_class"] = "POWER"
-#              d["state_class"] = "measurement"
+              d["state_class"] = "measurement"
             elif d["unit_of_measurement"] == "A":
               d["device_class"] = "CURRENT"
 #              d["state_class"] = "measurement"
             elif d["unit_of_measurement"] == "V":
               d["device_class"] = "VOLTAGE"
-#              d["state_class"] = "measurement"
+              d["state_class"] = "measurement"
+            elif d["unit_of_measurement"] == "Hz":
+              d["device_class"] = "frequency"
             elif d["unit_of_measurement"] == "m3" or d["unit_of_measurement"] == "m\u00b3":
               d["device_class"] = "GAS"
               d["state_class"] = "total"

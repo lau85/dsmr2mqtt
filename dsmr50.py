@@ -197,6 +197,10 @@ definition = {
   ["Voltage L3", "el", "V3", "^.*\((.*)\*V\)",
   "V", "float", "1", "1", "mdi:gauge"],
 
+"1-0:14.7.0":
+  ["Frequency", "el", "frequency", "^.*\((.*)\*Hz\)",
+  "Hz", "float", "1", "1", "mdi:sine-wave"],
+
 # Current seems to be measured in whole integer numbers (1, 2, 3....); if you need accurate current
 # numbers, you better divide Power by Volt to get a more accurate numer
 #"1-0:31.7.0":
