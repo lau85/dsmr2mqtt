@@ -61,6 +61,7 @@ class TaskReadSerial(threading.Thread):
     self.__stopper = stopper
     self.__telegram = telegram
     self.__counter = 0
+    self.__rxbuf = bytearray()
 
     self.__start_time = None
     self.__start_exported = None
@@ -203,6 +204,38 @@ class TaskReadSerial(threading.Thread):
       logging.info(f"New line: {line}")
     return line
 
+  def __next_line(self):
+    """
+      Returns the next line from the P1 port, decoded and without trailing CR LF.
+
+      pyserial's readline() reads the port one byte at a time (a select + read
+      syscall and timeout bookkeeping per byte), which is very CPU expensive on
+      a Raspberry Pi 1. Instead read whatever is already waiting in the driver
+      buffer in one go and split the lines here.
+      On a read timeout the partial line (possibly empty) is returned, like readline().
+      In non-production mode, lines are read from the simulator file.
+
+    Returns:
+      str
+    """
+    if not cfg.PRODUCTION:
+      return self.__tty.readline().decode('utf-8', errors='replace').rstrip()
+
+    while True:
+      idx = self.__rxbuf.find(b'\n')
+      if idx >= 0:
+        raw = bytes(self.__rxbuf[:idx + 1])
+        del self.__rxbuf[:idx + 1]
+        return raw.decode('utf-8', errors='replace').rstrip()
+
+      # Blocks (up to the port timeout) until at least 1 byte is available
+      chunk = self.__tty.read(self.__tty.in_waiting or 1)
+      if not chunk:
+        raw = bytes(self.__rxbuf)
+        self.__rxbuf.clear()
+        return raw.decode('utf-8', errors='replace').rstrip()
+      self.__rxbuf += chunk
+
   def __read_serial(self):
     """
       Opens & Closes serial port
@@ -229,7 +262,7 @@ class TaskReadSerial(threading.Thread):
 
       # Decode from binary to ascii
       # Remove CR LF
-      line = self.__tty.readline().decode('utf-8').rstrip()
+      line = self.__next_line()
 
       # First element in telegram starts with "!"
       nrof_elements = 0
@@ -240,7 +273,7 @@ class TaskReadSerial(threading.Thread):
           logger.exception("Error in __fix_line")
 
         self.__telegram.append(line)
-        line = self.__tty.readline().decode('utf-8').rstrip()
+        line = self.__next_line()
         nrof_elements += 1
 #        logger.debug(f"TELEGRAM Element = {line}")
 
