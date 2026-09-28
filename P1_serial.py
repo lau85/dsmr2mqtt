@@ -35,6 +35,11 @@ from datetime import datetime, timedelta
 
 import config as cfg
 
+# Detecting and repairing a telegram damaged by mains noise (see the module
+# docstring in dsmr_repair.py for the full approach) is a distinct concern
+# from reading the serial port, so it lives in its own file.
+from dsmr_repair import verify_crc, decode_lines, TelegramRepairer
+
 # Logging
 import __main__
 import logging
@@ -42,6 +47,27 @@ import os
 script = os.path.basename(__main__.__file__)
 script = os.path.splitext(script)[0]
 logger = logging.getLogger(script + "." + __name__)
+
+
+# Telegrams that fail CRC and can't be repaired are dumped here (raw bytes, exactly
+# as received) for later offline analysis -- eg to spot new corruption patterns
+# worth adding a repair for. On tmpfs (RAM-backed), so this costs no SD card wear
+# and is wiped on reboot; capped to the most recent N files so sustained noise
+# can't fill the (also shared) ramdisk mount. Disabled by default to save space;
+# set _SAVE_FAILED_TELEGRAMS to True to collect them again.
+_SAVE_FAILED_TELEGRAMS = False
+_FAILED_TELEGRAM_DIR = "/mnt/ramdisk/dsmr_failed_telegrams"
+_MAX_FAILED_TELEGRAMS = 500
+
+# A telegram from this meter is normally ~1.1KB. The end-of-telegram line ("!XXXX")
+# is recognized only by its leading "!"; if noise corrupts that one byte, the read
+# loop won't see a terminator and will keep reading straight into the *next*
+# telegram, merging them (and, under sustained heavy noise, potentially several
+# more after that, each with its own chance of a corrupted terminator). This caps
+# a single telegram read attempt so a run of bad luck can't make it grow
+# unbounded -- costly since every extra byte adds to the CRC/repair-search work
+# below on what is, either way, going to be discarded.
+_MAX_TELEGRAM_BYTES = 1600
 
 
 class TaskReadSerial(threading.Thread):
@@ -69,6 +95,17 @@ class TaskReadSerial(threading.Thread):
     self.__last_period_end_average = None
     self.__last_state_time = None
     self.__state_time_corrections_count = 0
+    self.__telegram_count = 0
+    self.__corrupt_count = 0
+    self.__repaired_count = 0
+    self.__repairer = TelegramRepairer()
+
+    if _SAVE_FAILED_TELEGRAMS:
+      try:
+        os.makedirs(_FAILED_TELEGRAM_DIR, exist_ok=True)
+      except Exception:
+        logger.exception(f"Could not create {_FAILED_TELEGRAM_DIR}; "
+                          f"failed telegrams won't be saved for analysis")
 
     # [ Serial parameters ]
     if cfg.PRODUCTION:
@@ -174,7 +211,7 @@ class TaskReadSerial(threading.Thread):
           state_time = self.__last_state_time + timedelta(seconds = 1)
           logging.error(f"Fixing state_time to '{state_time}'")
         else:
-          delta = (state_time - self.__last_state_time).total_seconds() 
+          delta = (state_time - self.__last_state_time).total_seconds()
           if delta < 0 or delta > 60:
             # only allow to do time correction 3 times, then taking timestamp from message.
             if self.__state_time_corrections_count < 3:
@@ -192,18 +229,6 @@ class TaskReadSerial(threading.Thread):
 
     return state_time
 
-  # Sometimes we can have corrupted data. This method is fixing the line
-  def __fix_line(self, line):
-    if '<' in line:
-      logging.info(f"Old line: {line}")
-      line = line.replace('<', '(')
-      logging.info(f"New line: {line}")
-    if '>' in line:
-      logging.info(f"Old line: {line}")
-      line = line.replace('>', '*')
-      logging.info(f"New line: {line}")
-    return line
-
   def __next_line(self):
     """
       Returns the next line from the P1 port, decoded and without trailing CR LF.
@@ -216,25 +241,155 @@ class TaskReadSerial(threading.Thread):
       In non-production mode, lines are read from the simulator file.
 
     Returns:
-      str
+      (str, bytes): decoded line, and the exact raw bytes it was decoded from
+      (including the CR LF terminator, if any); the raw bytes are used for
+      DSMR checksum validation in __read_serial().
     """
     if not cfg.PRODUCTION:
-      return self.__tty.readline().decode('utf-8', errors='replace').rstrip()
+      raw = self.__tty.readline()
+      return raw.decode('utf-8', errors='replace').rstrip(), raw
 
     while True:
       idx = self.__rxbuf.find(b'\n')
       if idx >= 0:
         raw = bytes(self.__rxbuf[:idx + 1])
         del self.__rxbuf[:idx + 1]
-        return raw.decode('utf-8', errors='replace').rstrip()
+        return raw.decode('utf-8', errors='replace').rstrip(), raw
 
       # Blocks (up to the port timeout) until at least 1 byte is available
       chunk = self.__tty.read(self.__tty.in_waiting or 1)
       if not chunk:
         raw = bytes(self.__rxbuf)
         self.__rxbuf.clear()
-        return raw.decode('utf-8', errors='replace').rstrip()
+        return raw.decode('utf-8', errors='replace').rstrip(), raw
       self.__rxbuf += chunk
+
+  def __sync_to_header(self):
+    """
+      Reads (and discards) lines until one starts with "/", the telegram header
+      marker. Every read attempt starts here rather than with a plain
+      __next_line(), so it always begins aligned on a real telegram boundary --
+      otherwise, once a previous attempt is abandoned mid-telegram (size cap or
+      an unrepairable checksum), nothing would otherwise force the byte stream
+      back into phase: with fixed-length, repeating-ish telegram content, a
+      lucky '!'-shaped line can keep matching just enough to make every
+      following attempt fail too, indefinitely, rather than recovering after
+      one bad telegram as intended.
+
+    Returns:
+      (str, bytes): the header line and its raw bytes, as __next_line() returns
+    """
+    line, raw = self.__next_line()
+    while (not self.__stopper.is_set()) and (not line.startswith('/')):
+      if (not cfg.PRODUCTION) and line.startswith('EOF'):
+        self.__stopper.set()
+        break
+      line, raw = self.__next_line()
+    return line, raw
+
+  def __save_failed_telegram(self, raw_telegram, suffix="", checksum_line=None):
+    """
+      Dumps a telegram that failed CRC and couldn't be repaired to
+      _FAILED_TELEGRAM_DIR for later offline analysis, then prunes that
+      directory down to the _MAX_FAILED_TELEGRAMS most recent files. Does
+      nothing unless _SAVE_FAILED_TELEGRAMS is set. Never raises -- a failure
+      here must not interrupt telegram processing.
+
+      CR bytes are stripped from the dump (DSMR lines are CR LF terminated) so
+      it reads cleanly with plain `cat`/an editor instead of showing "^M" at
+      the end of every line; the corruption itself -- the interesting part --
+      lives in the other bytes and is unaffected.
+
+    Args:
+      :param str suffix: appended to the filename (eg "_leadin") so multiple
+        dumps for the same telegram number/second -- eg the unrecoverable
+        lead-in discarded by __try_recover_second_telegram(), saved alongside
+        a later, unrelated save under the same counter -- don't overwrite
+        each other.
+      :param str checksum_line: the "!XXXX" that raw_telegram failed to match,
+        appended (hex digits only, raw_telegram already ends in "!") so the
+        dump is a complete, independently re-verifiable telegram -- without
+        it, nothing recorded here could later be confirmed as a correct fix
+        rather than just a plausible-looking guess. Omitted for a telegram
+        that never reached a checksum line at all (eg _MAX_TELEGRAM_BYTES).
+    """
+    if not _SAVE_FAILED_TELEGRAMS:
+      return
+
+    try:
+      name = f"{time.strftime('%Y%m%d-%H%M%S')}_{self.__counter:06d}{suffix}.raw"
+      data = bytes(raw_telegram)
+      if checksum_line:
+        match = re.match(r"!([0-9A-Fa-f]{4})", checksum_line)
+        if match:
+          data += match.group(1).encode()
+      with open(os.path.join(_FAILED_TELEGRAM_DIR, name), 'wb') as f:
+        f.write(data.replace(b'\r', b''))
+
+      entries = sorted(os.scandir(_FAILED_TELEGRAM_DIR), key=lambda e: e.name)
+      for stale in entries[:-_MAX_FAILED_TELEGRAMS]:
+        os.remove(stale.path)
+    except Exception:
+      logger.exception(f"Error saving failed telegram #{self.__counter} for analysis")
+
+  def __try_recover_second_telegram(self, raw_telegram):
+    """
+      When a read attempt goes oversized (2+ telegrams merged after a
+      corrupted terminator, see _MAX_TELEGRAM_BYTES), looks for an embedded
+      telegram header elsewhere in what was read -- a real, later telegram
+      whose start we blew past without recognizing it, since only its own
+      terminator, not its header, is what a mid-telegram read attempt would
+      normally look for. If found, the unrecoverable lead-in before it is
+      saved for analysis and discarded, and the embedded telegram is read to
+      completion on its own, so a single corrupted terminator costs at most
+      the telegram in front of it, not the one after it too.
+
+    Args:
+      :param bytearray raw_telegram: the oversized attempt's raw bytes so far
+
+    Returns:
+      (bytearray, str) | None: the embedded telegram's raw bytes (through its
+      own "!") and checksum line, ready for the normal CRC/repair path below;
+      or None if no embedded header was found, or it also went oversized.
+    """
+    # The header is fixed for a given meter -- this attempt's own leading line
+    # is a known-good copy of it -- so search for another occurrence of those
+    # exact bytes anywhere later in the buffer, rather than requiring a clean
+    # newline right before it: corruption severe enough to cause a merge often
+    # smears that boundary too (silently defeating a line-start-only search),
+    # while the header text itself, being further along, often survives intact.
+    own_header = bytes(raw_telegram).split(b'\r', 1)[0].split(b'\n', 1)[0]
+    split = bytes(raw_telegram).find(own_header, 1) if own_header else -1
+    if split < 0:
+      return None
+
+    logger.warning(f"Telegram #{self.__counter}: found an embedded header at byte "
+                    f"{split} of the oversized read; discarding the lead-in and "
+                    f"recovering the telegram after it")
+    self.__save_failed_telegram(raw_telegram[:split], suffix="_leadin")
+
+    # The embedded telegram's bytes already in hand are all header/body lines:
+    # too little of it fit before the size cap for its own "!" to already be
+    # among them, or this read wouldn't have gone oversized. Keep reading
+    # fresh lines -- exactly like a normal read attempt -- until this
+    # telegram's own checksum line, or give up if it's oversized too.
+    raw2 = bytearray(raw_telegram[split:])
+    line, raw = self.__next_line()
+    while (not self.__stopper.is_set()) and (not line.startswith('!')):
+      raw2 += raw
+
+      if len(raw2) > _MAX_TELEGRAM_BYTES:
+        return None
+
+      line, raw = self.__next_line()
+
+    if self.__stopper.is_set():
+      return None
+
+    bang_idx = raw.find(b'!')
+    if bang_idx >= 0:
+      raw2 += raw[:bang_idx + 1]
+    return raw2, line
 
   def __read_serial(self):
     """
@@ -256,32 +411,87 @@ class TaskReadSerial(threading.Thread):
       while self.__trigger.is_set():
         time.sleep(0.01)
 
-      # add a counter as first field to the list
-      self.__counter += 1
-      self.__telegram.append(f"{self.__counter}")
+      # Find the next telegram header before starting to read one, so a read
+      # attempt always begins aligned on a real telegram boundary (see
+      # __sync_to_header()).
+      line, raw = self.__sync_to_header()
+      if self.__stopper.is_set():
+        break
 
-      # Decode from binary to ascii
-      # Remove CR LF
-      line = self.__next_line()
+      self.__counter += 1
+
+      # Raw bytes exactly as received. The checksum is validated on these, every
+      # repair is made on these, and the decoded lines published to the parser
+      # are derived from these only once the telegram has been accepted -- so
+      # what gets published is always exactly what the checksum verified.
+      raw_telegram = bytearray()
 
       # First element in telegram starts with "!"
-      nrof_elements = 0
+      oversized = False
       while (not self.__stopper.is_set()) and (not line.startswith('!')):
-        try:
-          line = self.__fix_line(line)
-        except Exception:
-          logger.exception("Error in __fix_line")
+        raw_telegram += raw
 
-        self.__telegram.append(line)
-        line = self.__next_line()
-        nrof_elements += 1
-#        logger.debug(f"TELEGRAM Element = {line}")
+        if len(raw_telegram) > _MAX_TELEGRAM_BYTES:
+          oversized = True
+          break
+
+        line, raw = self.__next_line()
 
         # Only in simulator mode; detect EOF in file
         if (not cfg.PRODUCTION) and line.startswith('EOF'):
           self.__stopper.set()
           logger.debug(f"EOF Detected in {cfg.SIMULATORFILE}")
           break
+
+      if self.__stopper.is_set():
+        break
+
+      self.__telegram_count += 1
+      now = time.time()
+
+      if oversized:
+        # No terminator found within a sane telegram size -- most likely 2+
+        # telegrams merged after a corrupted "!" (see _MAX_TELEGRAM_BYTES).
+        # Before giving up: a later telegram's header is often still findable
+        # inside what was read, even though the leading one is unrecoverable.
+        recovered = self.__try_recover_second_telegram(raw_telegram)
+        if recovered is None:
+          self.__corrupt_count += 1
+          logger.warning(f"Discarding telegram #{self.__counter}: exceeded "
+                          f"{_MAX_TELEGRAM_BYTES} bytes without a checksum line "
+                          f"(2+ telegrams merged after a corrupted terminator?); "
+                          f"{self.__corrupt_count} discarded, {self.__repaired_count} "
+                          f"repaired, out of {self.__telegram_count} telegrams so far")
+          self.__save_failed_telegram(raw_telegram)
+          continue
+        raw_telegram, line = recovered
+      else:
+        # `line`/`raw` now hold the checksum line ("!XXXX"); the DSMR CRC covers
+        # bytes up to and including the "!" only, not the checksum digits after it.
+        bang_idx = raw.find(b'!')
+        if bang_idx >= 0:
+          raw_telegram += raw[:bang_idx + 1]
+
+      if not verify_crc(bytes(raw_telegram), line):
+        # try_repair() may modify raw_telegram even when it fails; keep the
+        # bytes as received for the failed-telegram dump.
+        received = bytes(raw_telegram)
+        repaired = self.__repairer.try_repair(raw_telegram, line, now)
+        if repaired:
+          self.__repaired_count += 1
+        else:
+          self.__corrupt_count += 1
+          logger.warning(f"Discarding telegram #{self.__counter}: DSMR checksum invalid "
+                          f"(noise on P1 line?); {self.__corrupt_count} discarded, "
+                          f"{self.__repaired_count} repaired, out of {self.__telegram_count} "
+                          f"telegrams so far")
+          self.__save_failed_telegram(received, checksum_line=line)
+          continue
+
+      self.__repairer.update_baseline(raw_telegram, now)
+
+      # counter as first field, then the lines of the accepted (possibly repaired) raw bytes
+      self.__telegram[:] = [f"{self.__counter}"] + decode_lines(raw_telegram)
 
       try:
         self.__preprocess()

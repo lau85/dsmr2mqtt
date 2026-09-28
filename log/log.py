@@ -56,7 +56,7 @@ V0.1:
 # ------------------------------------------------------------------------------------
 import __main__
 import logging
-from logging.handlers import SysLogHandler
+from logging.handlers import RotatingFileHandler
 import os
 import sys
 import getpass
@@ -81,34 +81,32 @@ c_format = logging.Formatter('%(name)s %(levelname)s: FUNCTION:%(funcName)s LINE
 c_handler.setFormatter(c_format)
 logger.addHandler(c_handler)
 
-# Syslog
-if sys.platform == "linux":
-  s_handler = logging.handlers.SysLogHandler(address='/dev/log')
-  # This setLevel determines which messages are processed by this handler (assuming it arrives from global logger)
-  s_handler.setLevel(logging.INFO)
-  s_format = logging.Formatter('%(name)s[%(process)d] %(levelname)s: '
-                               '%(asctime)s FUNCTION:%(funcName)s LINE:%(lineno)d: %(message)s',
-                               datefmt='%H:%M:%S')
-  s_handler.setFormatter(s_format)
-  logger.addHandler(s_handler)
+# Syslog handler removed: it forwarded every message to rsyslog/journald, which
+# on this host persists to the SD card. All file logging below goes to the
+# ramdisk (tmpfs) instead, and the systemd unit discards stdout (see
+# systemd/dsmr-mqtt.service) so nothing from this process is written to the SD
+# card. Console output above is still emitted for interactive/manual runs.
 
-
-# File
-# Test if /dev/shm is writable otherwise use /tmp
+# File -- on tmpfs (RAM-backed) to avoid SD card wear; capped size so it can't
+# fill up the (also shared) ramdisk mount. Falls back to /dev/shm, then /tmp,
+# if /mnt/ramdisk isn't available.
 try:
-  if os.access("/dev/shm", os.W_OK):
-    f_handler = logging.FileHandler(f"/dev/shm/{script}.{currentuser}.log", 'a')
+  for _dir in ("/mnt/ramdisk", "/dev/shm", "/tmp"):
+    if os.access(_dir, os.W_OK):
+      break
   else:
-    f_handler = logging.FileHandler(f"/tmp/{script}.{currentuser}.log", 'a')
+    raise OSError("no writable log directory found")
 
-  f_handler.setLevel(logging.ERROR)
+  f_handler = RotatingFileHandler(
+      f"{_dir}/{script}.{currentuser}.log", mode='a', maxBytes=2 * 1024 * 1024, backupCount=2)
+  f_handler.setLevel(logging.INFO)
   f_format = logging.Formatter('%(name)s[%(process)d] %(levelname)s: '
                                '%(asctime)s FUNCTION:%(funcName)s LINE:%(lineno)d: %(message)s',
                                datefmt='%Y-%m-%d,%H:%M:%S')
   f_handler.setFormatter(f_format)
   logger.addHandler(f_handler)
 except Exception as e:
-  print(f"Exception {e}: /dev/shm/{script}.log permission denied")
+  print(f"Exception {e}: could not open log file under /mnt/ramdisk, /dev/shm or /tmp")
 
 # logger.debug('This is a debug message')
 # logger.info('This is an info message')

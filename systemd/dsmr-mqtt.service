@@ -18,5 +18,11 @@ Environment="PYTHONPATH=/opt/python/lib"
 Restart=on-failure
 RestartSec=60
 
+# All application logging goes to a rotating file on /mnt/ramdisk (see log/log.py)
+# to save SD card write cycles. Discard the (duplicate) stdout stream so
+# journald doesn't also persist it to disk; keep stderr on its default (journal)
+# so an unexpected crash is still visible via `journalctl -u dsmr-mqtt`.
+StandardOutput=null
+
 [Install]
 WantedBy=network-online.target
